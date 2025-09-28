@@ -146,6 +146,71 @@ Each pin publishes one of:
 ```
 
 ---
+## State Diagram
+stateDiagram-v2
+    direction LR
+
+    %% ===========================
+    %% States
+    %% ===========================
+    [*] --> IDLE
+    IDLE: idle
+    PRESSING: pressing
+    WAIT_DOUBLE: waitDoubleWindow
+    LONG_HELD: longHeld
+    DOUBLE_WAIT_RELEASE: doubleWaitRelease
+    POST_DELAY_OFF: postDelayOff (timer)
+    OFF: off (published)
+
+    %% ===========================
+    %% Transitions (with actions)
+    %% ===========================
+    IDLE --> PRESSING: press (level=HIGH)\n/cancelOff()
+    PRESSING --> WAIT_DOUBLE: release && held < longMinMs\n/setDoubleWindow(now + doubleMaxDelayMs)
+    PRESSING --> LONG_HELD: held >= longMinMs\n/publish("long")
+
+    %% If double disabled globally or per-pin (doubleMaxDelayMs==0)
+    PRESSING --> POST_DELAY_OFF: release && held < longMinMs && doubleMaxDelayMs==0\n/publish("single"), scheduleOff(offDelayMs)
+
+    %% Double path
+    WAIT_DOUBLE --> DOUBLE_WAIT_RELEASE: press within window\n/publish("double")
+    WAIT_DOUBLE --> POST_DELAY_OFF: window timeout\n/publish("single"), scheduleOff(offDelayMs)
+
+    %% Long path release
+    LONG_HELD --> POST_DELAY_OFF: release\n/publish("released"), scheduleOff(releaseOffDelayMs)
+
+    %% Double ends on release -> then off
+    DOUBLE_WAIT_RELEASE --> POST_DELAY_OFF: release\n/scheduleOff(offDelayMs)
+
+    %% Any new press while waiting for OFF cancels pending off
+    POST_DELAY_OFF --> PRESSING: press\n/cancelOff()
+
+    %% Timer expiry drives the final OFF publication
+    POST_DELAY_OFF --> OFF: offDeadline reached\n/publish("off")
+    OFF --> IDLE: (implicit return)
+
+    %% ===========================
+    %% Notes / Legend
+    %% ===========================
+    note right of PRESSING
+      held = now - tPressStart
+      longMinMs: per-pin override or global
+    end note
+
+    note right of WAIT_DOUBLE
+      window: now < tWindowDeadline
+      doubleMaxDelayMs: per-pin override or global
+      if 0 => single immediately
+    end note
+
+    note right of POST_DELAY_OFF
+      scheduleOff(delay):
+        - single/double -> offDelayMs
+        - released      -> releaseOffDelayMs
+    end note
+---
+
+---
 
 ## 🚀 Roadmap / TODO
 
