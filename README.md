@@ -1,159 +1,208 @@
 # Domodreams MCP23017 ESPHome Component
 
-Custom ESPHome component for the **MCP23017 I/O expander**, with:
-
-- **Debouncing** (per-pin, global default).
-- **FSM gesture recognition**:  
-  - `single`  
-  - `double`  
-  - `long`  
-  - `released`  
-  - `off`
-- **Off scheduling** (`off_delay`, `release_off_delay`).
-- **Per-pin overrides** for `long_min` and `double_max_delay`.
-- **Last triggered metadata**: which pin fired and when.
-- **I²C guard**: after 3 consecutive failures, marks the component failed, publishes all pins as `off`, and optionally reboots.
+Custom ESPHome component for the MCP23017 16‑bit I/O expander with rich button/gesture detection, debouncing, failure guards, and Home Assistant integration.
 
 ---
 
-## Configuration
+## ✨ Features
 
-### Global options
+- 16 pins per MCP23017 (supports multiple devices on same I²C bus).
+- Per‑pin **debouncing**.
+- Gesture FSM with:
+  - `single` press
+  - `double` press
+  - `long` press
+  - `released`
+  - `off` (idle state after delay)
+- Configurable delays (`debounce`, `long_min`, `double_max_delay`, `off_delay`, `release_off_delay`).
+- Optional **per‑pin overrides** for `double_max_delay` and `long_min`.
+- Publishes button state as `text_sensor` values (`single`, `double`, `long`, `released`, `off`).
+- Optional *last triggered button* and *last triggered time* sensors.
+- Robust I²C guard:
+  - Publishes all `off` after 3 consecutive read failures.
+  - Marks component failed with clear reason.
+  - Optional reboot on fail.
+- Clean **debounce → FSM → publish** pipeline.
+- Works on ESP32 + ESPHome `external_components`.
 
-```yaml
+---
+
+## 📦 Installation
+
+Place this repo under `esphome/components/domodreams_mcp23017/` in your ESPHome config folder:
+
+```
+esphome:
+  name: mynode
+
 external_components:
   - source:
       type: local
       path: components
     components: [domodreams_mcp23017]
+```
 
-i2c:
-  sda: 13
-  scl: 16
-  frequency: 100kHz
-  id: i2c_bus_1
+---
 
-time:
-  - platform: homeassistant
-    id: homeassistant_time
+## ⚙️ Configuration
 
+### Global MCP23017 block
+
+```yaml
 text_sensor:
-  - platform: template
-    id: last_btn
-    name: "Last Triggered Button"
-
-  - platform: template
-    id: last_time
-    name: "Last Triggered Time"
-
   - platform: domodreams_mcp23017
     id: mcp1
     i2c_id: i2c_bus_1
     address: 0x20
-    debounce: 50               # debounce in ms (default 50)
-    long_min: 1000             # global long press threshold (ms)
-    double_max_delay: 300      # global double click window (ms, 0 disables)
-    off_delay: 100             # delay before returning to "off" after single/double
-    release_off_delay: 1000    # delay before returning to "off" after release
-    update_interval: 10ms      # poll interval (default 10ms)
-    reboot_on_fail: false
-    time_id: homeassistant_time
+    debounce: 50                # Debounce in ms (default: 50)
+    long_min: 1000              # Long press min duration (ms)
+    double_max_delay: 300       # Max delay between clicks (ms)
+    off_delay: 100              # Delay after single/double before publishing "off"
+    release_off_delay: 1000     # Delay after release before publishing "off"
+    reboot_on_fail: false       # Reboot device if I2C fails (default: false)
+    update_interval: 10ms       # Polling interval (default: 10ms)
+    time_id: homeassistant_time # Optional RTC for timestamps
     last_triggered_button: last_btn
     last_triggered_time: last_time
     sensors:
       - name: MCP1 Pin 0
-        id: mcp1_0
       - name: MCP1 Pin 1
       - name: MCP1 Pin 2
       - name: MCP1 Pin 3
-      - name: MCP1 Pin 4
-      - name: MCP1 Pin 5
-      - name: MCP1 Pin 6
-      - name: MCP1 Pin 7
-      - name: MCP1 Pin 8
-      - name: MCP1 Pin 9
-      - name: MCP1 Pin 10
-      - name: MCP1 Pin 11
-      - name: MCP1 Pin 12
-      - name: MCP1 Pin 13
-      - name: MCP1 Pin 14
+      # ...
       - name: MCP1 Pin 15
 ```
 
----
+### Per‑pin overrides
 
-### Per-pin overrides
-
-Each `sensor` can override **`long_min`** and/or **`double_max_delay`**:
+You can override `double_max_delay` and `long_min` **per sensor**:
 
 ```yaml
     sensors:
       - name: MCP1 Pin 0
-        id: mcp1_0
-        long_min: 2000            # Only for this pin: long press ≥ 2000ms
-        double_max_delay: 0       # Disable double click → always single
+        double_max_delay: 0   # Disable double-click on this pin
       - name: MCP1 Pin 1
-        id: mcp1_1
-        # uses global defaults
+        long_min: 2000        # Require 2s hold for long press
+      - name: MCP1 Pin 2
+        long_min: 1500
+        double_max_delay: 500
 ```
 
-- If **per-pin value is set**, it takes precedence.  
-- If not set, **global value** is used.
+If not specified, pins inherit the **global defaults**.
 
 ---
 
-## Gesture logic
+## ⏱️ Published States
 
-- **Press < long_min → candidate**
-  - If another press begins within `double_max_delay` → `double`
-  - Else → `single`
-- **Press ≥ long_min → `long`**
-  - On release → `released`
-- **Every gesture → transitions to `off`**
-  - After `off_delay` for `single`/`double`
-  - After `release_off_delay` for `released`
+Each pin publishes one of:
 
----
-
-## Failure behavior
-
-- If **3 consecutive I²C reads fail**:
-  - Publishes `"off"` for all pins
-  - Marks the component **FAILED** with a reason (`I/O failed at 0x20`, etc.)
-  - If `reboot_on_fail: true`, schedules reboot in 1s.
+- `single` → short press, no double followed.
+- `double` → two short presses within `double_max_delay`.
+- `long` → pressed ≥ `long_min`.
+- `released` → release after long.
+- `off` → idle state after off delay.
 
 ---
 
-## Example automations
+## 🛡️ Failure Handling
+
+- All pins initialized to `off` at boot (never “unknown” in HA).
+- If 3 consecutive I²C read failures occur:
+  - All pins → `off`
+  - Component marked failed with reason
+  - Optional reboot after 1s if `reboot_on_fail: true`
+
+---
+
+## 🏗️ Architecture
+
+- **setup()**
+  - Configure MCP23017 registers (inputs, pullups, inverted, no interrupts).
+  - Publish initial `off` to all sensors.
+- **update()**
+  - Read GPIOA/B → debounce → FSM → publish.
+  - On failure → guard logic.
+- **Debounce**
+  - Candidate stable for ≥ debounceMs → stable state.
+- **FSM**
+  - Tracks per‑pin press/release windows.
+  - Publishes gestures (`single`, `double`, `long`, `released`, `off`).
+- **Publish**
+  - Push to text_sensors.
+  - Update optional “last triggered button/time”.
+
+---
+
+## 📊 FSM Diagram
+
+```
+ IDLE
+   │ press
+   ▼
+ PRESSING ── release (<longMin) ──► WAIT_DOUBLE_WINDOW ── timeout ──► single + offDelay
+   │ hold ≥longMin                                     │ second press
+   ▼                                                   ▼
+ LONG ── release ──► released + releaseOffDelay     double + waitRelease ──► offDelay
+```
+
+---
+
+## 🚀 Roadmap / TODO
+
+- [x] Debounce engine
+- [x] FSM for single/double/long/release/off
+- [x] I²C guard with fail reason
+- [x] Last triggered metadata
+- [x] Per‑pin overrides for `long_min` and `double_max_delay`
+- [ ] Option for per‑pin debounce
+- [ ] Configurable pullup enable/disable
+- [ ] Configurable invert logic
+- [ ] Group sensors (multi-MCP coordination)
+- [ ] Expose binary_sensor variant
+- [ ] Smarter logging levels
+
+---
+
+## 🧠 Best Practices
+
+- Keep `update_interval` ≥ 10ms (I²C + debounce load).
+- `double_max_delay: 0` disables double-click → faster singles.
+- Use per‑pin `long_min` for critical vs secondary buttons.
+- Use reboot_on_fail only if hardware is unreliable.
+
+---
+
+## 📚 Example with 4 chips
 
 ```yaml
-automation:
-  - alias: "Button 0 single press"
-    trigger:
-      - platform: state
-        entity_id: text_sensor.mcp1_pin_0
-        to: "single"
-    action:
-      - service: light.toggle
-        target: { entity_id: light.kitchen }
+text_sensor:
+  - platform: domodreams_mcp23017
+    id: mcp1
+    address: 0x20
+    sensors: [ ... 16 pins ... ]
 
-  - alias: "Button 0 long press"
-    trigger:
-      - platform: state
-        entity_id: text_sensor.mcp1_pin_0
-        to: "long"
-    action:
-      - service: light.turn_off
-        target: { entity_id: light.kitchen }
+  - platform: domodreams_mcp23017
+    id: mcp2
+    address: 0x21
+    sensors: [ ... ]
+
+  - platform: domodreams_mcp23017
+    id: mcp3
+    address: 0x22
+    sensors: [ ... ]
+
+  - platform: domodreams_mcp23017
+    id: mcp4
+    address: 0x23
+    sensors: [ ... ]
 ```
 
 ---
 
-## Notes
+## 📌 Notes
 
-- **Update interval** (`update_interval`) controls polling and debounce responsiveness.  
-  - 10ms is typical, but 15–20ms may reduce I²C load.
-- **Double click**: if `double_max_delay: 0`, all short presses are immediately `single`.
-- **Resource use**:  
-  - Each MCP23017 adds ~2kB RAM and <1ms CPU per poll cycle.  
-  - ESP32 handles up to 8 MCP23017 comfortably with update_interval ≥10ms.
+- Default init sets **all pins to input with pullup**.
+- Buttons wired active-low → logic inverted in driver.
+- Works well with long I²C cables up to ~100kHz.
+
+---
