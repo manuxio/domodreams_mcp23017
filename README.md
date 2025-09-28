@@ -147,6 +147,7 @@ Each pin publishes one of:
 
 ---
 ## State Diagram
+```mermaid
 stateDiagram-v2
     direction LR
 
@@ -208,6 +209,7 @@ stateDiagram-v2
         - single/double -> offDelayMs
         - released      -> releaseOffDelayMs
     end note
+```
 ---
 
 ---
