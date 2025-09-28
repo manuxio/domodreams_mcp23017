@@ -22,6 +22,14 @@ CONF_LAST_TRIGGERED_BUTTON = "last_triggered_button"
 CONF_LAST_TRIGGERED_TIME = "last_triggered_time"
 CONF_TIME_ID = "time_id"  # optional RTC source
 
+# --- Per-pin overrides schema (adds optional long_min / double_max_delay to each sensor) ---
+PIN_SENSOR_SCHEMA = text_sensor.text_sensor_schema().extend(
+    {
+        cv.Optional(CONF_LONG_MIN): cv.positive_int,
+        cv.Optional(CONF_DOUBLE_MAX_DELAY): cv.positive_int,
+    }
+)
+
 CONFIG_SCHEMA = (
     cv.Schema(
         {
@@ -36,7 +44,7 @@ CONFIG_SCHEMA = (
             cv.Optional(CONF_LAST_TRIGGERED_TIME): cv.use_id(text_sensor.TextSensor),
             cv.Optional(CONF_TIME_ID): cv.use_id(time_comp.RealTimeClock),
             cv.Required(CONF_SENSORS): cv.All(
-                cv.ensure_list(text_sensor.text_sensor_schema()),
+                cv.ensure_list(PIN_SENSOR_SCHEMA),  # <-- use the extended per-pin schema
                 cv.Length(min=16, max=16),
             ),
         }
@@ -75,3 +83,9 @@ async def to_code(config):
     for i, ts_conf in enumerate(config[CONF_SENSORS]):
         ts = await text_sensor.new_text_sensor(ts_conf)
         cg.add(var.setTextSensor(i, ts))
+
+        # --- Apply per-pin overrides if provided ---
+        if CONF_LONG_MIN in ts_conf:
+            cg.add(var.setPinLongMin(i, ts_conf[CONF_LONG_MIN]))
+        if CONF_DOUBLE_MAX_DELAY in ts_conf:
+            cg.add(var.setPinDoubleMaxDelay(i, ts_conf[CONF_DOUBLE_MAX_DELAY]))

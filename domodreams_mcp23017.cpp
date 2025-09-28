@@ -92,13 +92,14 @@ void DomodreamsMCP23017::dump_config() {
   ESP_LOGCONFIG(TAG, "Domodreams MCP23017");
   ESP_LOGCONFIG(TAG, "  Address: 0x%02X", this->address_);
   ESP_LOGCONFIG(TAG, "  Debounce: %u ms", (unsigned) debounceMs);
-  ESP_LOGCONFIG(TAG, "  longMin: %u ms", (unsigned) longMinMs);
-  ESP_LOGCONFIG(TAG, "  doubleMaxDelay: %u ms", (unsigned) doubleMaxDelayMs);
+  ESP_LOGCONFIG(TAG, "  longMin (global): %u ms", (unsigned) longMinMs);
+  ESP_LOGCONFIG(TAG, "  doubleMaxDelay (global): %u ms", (unsigned) doubleMaxDelayMs);
   ESP_LOGCONFIG(TAG, "  offDelay: %u ms", (unsigned) offDelayMs);
   ESP_LOGCONFIG(TAG, "  releaseOffDelay: %u ms", (unsigned) releaseOffDelayMs);
   ESP_LOGCONFIG(TAG, "  Reboot on fail: %s", rebootOnFail ? "true" : "false");
   for (int i = 0; i < 16; i++) {
     if (sensors[i] != nullptr) {
+      // Note: per-pin overrides (if present) affect runtime behavior; we still show the sensor names here.
       ESP_LOGCONFIG(TAG, "  Sensor %d: %s", i, sensors[i]->get_name().c_str());
     }
   }
@@ -231,8 +232,14 @@ void DomodreamsMCP23017::fsmOnEdge(int i, bool newLevel, uint32_t now) {
       if (!newLevel) {
         // First press ended before being long? → candidate for single/double.
         const uint32_t dur = now - tPressStart[i];
-        if (dur < longMinMs) {
-          if (doubleMaxDelayMs == 0) {
+
+        // Use per-pin longMin override if present, else global.
+        const uint32_t pinLong = effLongMin(i);
+
+        if (dur < pinLong) {
+          // Use per-pin doubleMaxDelay override if present, else global.
+          const uint32_t dbl = effDoubleDelay(i);
+          if (dbl == 0) {
             // Double disabled: publish single immediately, then schedule off.
             publishPin(i, "single");
             scheduleOff(i, offDelayMs);
@@ -240,7 +247,7 @@ void DomodreamsMCP23017::fsmOnEdge(int i, bool newLevel, uint32_t now) {
           } else {
             // Wait for an optional second press within the double window.
             tRelease[i] = now;
-            tWindowDeadline[i] = now + doubleMaxDelayMs;
+            tWindowDeadline[i] = now + dbl;
             fsmState[i] = PinFSM::WAIT_DOUBLE_WINDOW;
           }
         } else {
@@ -291,9 +298,10 @@ void DomodreamsMCP23017::fsmOnEdge(int i, bool newLevel, uint32_t now) {
 void DomodreamsMCP23017::fsmOnTick(int i, uint32_t now) {
   switch (fsmState[i]) {
     case PinFSM::PRESSING: {
-      // While pressed, check if we’ve crossed longMinMs.
+      // While pressed, check if we’ve crossed long threshold (per-pin or global).
       const uint32_t held = now - tPressStart[i];
-      if (!publishedLong[i] && held >= longMinMs) {
+      const uint32_t pinLong = effLongMin(i);
+      if (!publishedLong[i] && held >= pinLong) {
         publishPin(i, "long");        // One-time "long" gesture
         publishedLong[i] = true;
         fsmState[i] = PinFSM::LONG_HELD; // Wait for release to publish "released"
