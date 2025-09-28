@@ -46,9 +46,9 @@ class DomodreamsMCP23017 : public PollingComponent, public i2c::I2CDevice {
   }
   void setTime(time::RealTimeClock *t) { rtc = t; }
 
-  // per-pin overrides (optional)
-  void setPinLongMin(int idx, uint32_t v) { pinHasLongMin[idx] = true; pinLongMin[idx] = v; }
-  void setPinDoubleMaxDelay(int idx, uint32_t v) { pinHasDoubleMax[idx] = true; pinDoubleMax[idx] = v; }
+  // Per-pin overrides setters (optional; used by codegen if present)
+  void setPinLongMin(int pin, uint32_t v) { pinLongMin[pin] = v; hasPinLongMin[pin] = true; }
+  void setPinDoubleMaxDelay(int pin, uint32_t v) { pinDoubleMaxDelay[pin] = v; hasPinDouble[pin] = true; }
 
  protected:
   // I2C helpers
@@ -80,9 +80,13 @@ class DomodreamsMCP23017 : public PollingComponent, public i2c::I2CDevice {
   void scheduleOff(int i, uint32_t delayMs);
   void cancelOff(int i);
 
-  // Effective values (per-pin override or global)
-  inline uint32_t effLongMin(int i) const { return pinHasLongMin[i] ? pinLongMin[i] : longMinMs; }
-  inline uint32_t effDoubleDelay(int i) const { return pinHasDoubleMax[i] ? pinDoubleMax[i] : doubleMaxDelayMs; }
+  // Effective thresholds (per-pin override if set, else global)
+  inline uint32_t effLongMin(int i) const {
+    return hasPinLongMin[i] ? pinLongMin[i] : longMinMs;
+  }
+  inline uint32_t effDoubleDelay(int i) const {
+    return hasPinDouble[i] ? pinDoubleMaxDelay[i] : doubleMaxDelayMs;
+  }
 
   // FSM state storage
   PinFSM  fsmState[16] = {PinFSM::IDLE};
@@ -113,7 +117,7 @@ class DomodreamsMCP23017 : public PollingComponent, public i2c::I2CDevice {
   bool stableValid[16] = {false};
   uint16_t changedMask{0};
 
-  // configuration (global defaults)
+  // configuration (global)
   uint32_t debounceMs{50};
   uint32_t longMinMs{1000};
   uint32_t doubleMaxDelayMs{300};
@@ -121,11 +125,14 @@ class DomodreamsMCP23017 : public PollingComponent, public i2c::I2CDevice {
   uint32_t releaseOffDelayMs{1000};
   bool rebootOnFail{false};
 
-  // per-pin overrides (used if corresponding pinHas* flag is true)
-  bool pinHasLongMin[16] = {false};
-  bool pinHasDoubleMax[16] = {false};
+  // per-pin overrides (optional)
+  bool hasPinLongMin[16] = {false};
+  bool hasPinDouble[16] = {false};
   uint32_t pinLongMin[16] = {0};
-  uint32_t pinDoubleMax[16] = {0};
+  uint32_t pinDoubleMaxDelay[16] = {0};
+
+  // last published state per pin (for dedup + logging)
+  std::string lastPublishedState[16];
 
   // lifecycle & guard
   bool initDone{false};

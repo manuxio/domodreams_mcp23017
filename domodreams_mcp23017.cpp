@@ -35,13 +35,11 @@ Uses timers to schedule delayed off publications (offDelay / releaseOffDelay).
 publishPin():
 Publishes the text state to the corresponding text sensor and updates the optional
 “last triggered” sensors (button name + wall-clock time if available).
+Now gated: we only publish/log when the state actually changes.
 
 I²C guard (handleIoFail):
 After 3 consecutive GPIO read failures, publish off for all pins, mark failed with
 a persistent reason, stop updates, and optionally reboot after 1s if reboot_on_fail is true.
-
-This keeps states clean for HA, provides explicit failure reasons, and cleanly separates
-debounce → FSM → publish for maintainability and future extensions.
 
 */
 
@@ -92,15 +90,16 @@ void DomodreamsMCP23017::dump_config() {
   ESP_LOGCONFIG(TAG, "Domodreams MCP23017");
   ESP_LOGCONFIG(TAG, "  Address: 0x%02X", this->address_);
   ESP_LOGCONFIG(TAG, "  Debounce: %u ms", (unsigned) debounceMs);
-  ESP_LOGCONFIG(TAG, "  longMin (global): %u ms", (unsigned) longMinMs);
-  ESP_LOGCONFIG(TAG, "  doubleMaxDelay (global): %u ms", (unsigned) doubleMaxDelayMs);
+  ESP_LOGCONFIG(TAG, "  longMin: %u ms", (unsigned) longMinMs);
+  ESP_LOGCONFIG(TAG, "  doubleMaxDelay: %u ms", (unsigned) doubleMaxDelayMs);
   ESP_LOGCONFIG(TAG, "  offDelay: %u ms", (unsigned) offDelayMs);
   ESP_LOGCONFIG(TAG, "  releaseOffDelay: %u ms", (unsigned) releaseOffDelayMs);
   ESP_LOGCONFIG(TAG, "  Reboot on fail: %s", rebootOnFail ? "true" : "false");
   for (int i = 0; i < 16; i++) {
     if (sensors[i] != nullptr) {
-      // Note: per-pin overrides (if present) affect runtime behavior; we still show the sensor names here.
-      ESP_LOGCONFIG(TAG, "  Sensor %d: %s", i, sensors[i]->get_name().c_str());
+      const char *last = lastPublishedState[i].empty() ? "(none)" : lastPublishedState[i].c_str();
+      ESP_LOGCONFIG(TAG, "  Sensor %d: %s | last: %s",
+                    i, sensors[i]->get_name().c_str(), last);
     }
   }
   // If there was a previous failure, show the last reason to aid diagnostics.
@@ -232,12 +231,9 @@ void DomodreamsMCP23017::fsmOnEdge(int i, bool newLevel, uint32_t now) {
       if (!newLevel) {
         // First press ended before being long? → candidate for single/double.
         const uint32_t dur = now - tPressStart[i];
-
-        // Use per-pin longMin override if present, else global.
         const uint32_t pinLong = effLongMin(i);
 
         if (dur < pinLong) {
-          // Use per-pin doubleMaxDelay override if present, else global.
           const uint32_t dbl = effDoubleDelay(i);
           if (dbl == 0) {
             // Double disabled: publish single immediately, then schedule off.
@@ -340,11 +336,16 @@ void DomodreamsMCP23017::fsmOnTick(int i, uint32_t now) {
 void DomodreamsMCP23017::publishPin(int i, const char *state) {
   auto *ts = sensors[i];
   if (ts == nullptr) return;           // Skip if sensor not configured
-  ESP_LOGD(TAG, "publish pin %d -> %s", i, state);
-  ts->publish_state(state);            // Push state to HA
 
-  // Update "last triggered" metadata for gestures (skip "off").
-  if (!(state[0] == 'o' && state[1] == 'f' && state[2] == 'f' && state[3] == '\0')) {
+  // Prevent redundant publish/logging if state is same as previous
+  if (lastPublishedState[i] == state) return;
+
+  ESP_LOGI(TAG, "Mcp at 0x%02X - pin %d - state change: %s", this->address_, i, state);
+  ts->publish_state(state);            // Push state to HA
+  lastPublishedState[i] = state;       // Track last published state
+
+  // Update "last triggered" metadata for gestures (skip "off")
+  if (!(strcmp(state, "off") == 0)) {
     const uint32_t now = millis();
     this->publishLastTriggered_(i, state, now);
   }
