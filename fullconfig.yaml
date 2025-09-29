@@ -1,0 +1,67 @@
+Failed config
+
+text_sensor.domodreams_mcp23017: [source 1016018190.yaml:90]
+  platform: domodreams_mcp23017
+  
+  ID mcp_autogen redefined! Check text_sensor->3->id.
+  id: mcp_autogen
+  i2c_id: i2c_bus_1
+  address: 0x21
+  generate_sensors: True
+  debounce: 50
+  long_min: 1000
+  double_max_delay: 300
+  off_delay: 100
+  release_off_delay: 1000
+  reboot_on_fail: False
+  pins: []
+  sensors: 
+    - name: MCP 0x21 Pin 0
+      pin: 0
+      disabled_by_default: False
+    - name: MCP 0x21 Pin 1
+      pin: 1
+      disabled_by_default: False
+    - name: MCP 0x21 Pin 2
+      pin: 2
+      disabled_by_default: False
+    - name: MCP 0x21 Pin 3
+      pin: 3
+      disabled_by_default: False
+    - name: MCP 0x21 Pin 4
+      pin: 4
+      disabled_by_default: False
+    - name: MCP 0x21 Pin 5
+      pin: 5
+      disabled_by_default: False
+    - name: MCP 0x21 Pin 6
+      pin: 6
+      disabled_by_default: False
+    - name: MCP 0x21 Pin 7
+      pin: 7
+      disabled_by_default: False
+    - name: MCP 0x21 Pin 8
+      pin: 8
+      disabled_by_default: False
+    - name: MCP 0x21 Pin 9
+      pin: 9
+      disabled_by_default: False
+    - name: MCP 0x21 Pin 10
+      pin: 10
+      disabled_by_default: False
+    - name: MCP 0x21 Pin 11
+      pin: 11
+      disabled_by_default: False
+    - name: MCP 0x21 Pin 12
+      pin: 12
+      disabled_by_default: False
+    - name: MCP 0x21 Pin 13
+      pin: 13
+      disabled_by_default: False
+    - name: MCP 0x21 Pin 14
+      pin: 14
+      disabled_by_default: False
+    - name: MCP 0x21 Pin 15
+      pin: 15
+      disabled_by_default: False
+  update_interval: 10ms

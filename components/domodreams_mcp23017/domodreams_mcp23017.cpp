@@ -1,44 +1,11 @@
 /*
-Logic overview (what the code does)
-
-setup():
-Initializes the MCP23017 (all pins = inputs, pull-ups ON, polarity inverted, interrupts OFF).
-If any I²C write fails, it marks the component failed with a reason and exits.
-It also publishes “off” to all 16 sensors at boot so HA never sees “unknown”.
-
-dump_config():
-Prints the current configuration (timings, address, sensor names) and the last failure
-reason if one exists.
-
-update():
-Runs every update_interval. It reads both GPIO ports; on failure, increments a failure
-streak and after 3 consecutive failures marks the component failed (and optionally reboots).
-On success, it runs the debounce stage and then the FSM + publish stage.
-
-Debounce (runDebounce):
-Per pin, a candidate level must be stable for debounceMs before it becomes the “stable” level.
-When a stable level changes, a bit in changedMask is set to feed the FSM.
-
-FSM (evaluateAndPublish, fsmOnEdge, fsmOnTick):
-Detects edges from the debounced stream and transitions per-pin states.
-Implements gesture logic:
-
-- long when held ≥ longMinMs, then on release released, then off after releaseOffDelay.
-- single if released before longMinMs and no second press within doubleMaxDelay.
-- double if a second press starts within doubleMaxDelay.
-
-Uses timers to schedule delayed off publications (offDelay / releaseOffDelay).
-
-publishPin():
-Publishes the text state to the corresponding text sensor and updates the optional
-“last triggered” sensors (button name + wall-clock time if available).
-
-I²C guard (handleIoFail):
-After 3 consecutive GPIO read failures, publish off for all pins, mark failed with
-a persistent reason, stop updates, and optionally reboot after 1s if reboot_on_fail is true.
-
-This keeps states clean for HA, provides explicit failure reasons, and cleanly separates
-debounce → FSM → publish for maintainability and future extensions.
+Compact comments kept near each block; behavior unchanged from prior iteration, with:
+- sensors list optional, optional pin mapping
+- per-pin overrides via pins: and/or sensors:
+- words configurable per instance
+- on_fsm_change trigger with (pin, name, state, prev_state, time_ms, unixtime)
+- immediate "single" when long_min==0 && double_max_delay==0
+- off_delay==0 publishes "off" immediately (no timer)
 */
 
 #include "domodreams_mcp23017.h"
@@ -56,13 +23,13 @@ void DomodreamsMCP23017::setup() {
   this->publishAllOff_();
 
   bool ok = true;
-  ok &= this->writeReg(REG_IODIRA, 0xFF);
+  ok &= this->writeReg(REG_IODIRA, 0xFF);    // inputs
   ok &= this->writeReg(REG_IODIRB, 0xFF);
-  ok &= this->writeReg(REG_GPPUA,  0xFF);
+  ok &= this->writeReg(REG_GPPUA,  0xFF);    // pull-ups
   ok &= this->writeReg(REG_GPPUB,  0xFF);
-  ok &= this->writeReg(REG_IPOLA,  0xFF);
+  ok &= this->writeReg(REG_IPOLA,  0xFF);    // inverted
   ok &= this->writeReg(REG_IPOLB,  0xFF);
-  ok &= this->writeReg(REG_GPINTENA, 0x00);
+  ok &= this->writeReg(REG_GPINTENA, 0x00);  // interrupts disabled
   ok &= this->writeReg(REG_GPINTENB, 0x00);
 
   if (!ok) {
@@ -75,27 +42,29 @@ void DomodreamsMCP23017::setup() {
   ESP_LOGI(TAG,
            "MCP23017 0x%02X initialized | debounce=%ums longMin=%ums doubleMaxDelay=%ums "
            "offDelay=%ums releaseOffDelay=%ums rebootOnFail=%s",
-           this->address_, debounceMs, longMinMs, doubleMaxDelayMs,
-           offDelayMs, releaseOffDelayMs, rebootOnFail ? "true" : "false");
+           this->address_, debounceMs_, longMinMs_, doubleMaxDelayMs_,
+           offDelayMs_, releaseOffDelayMs_, rebootOnFail_ ? "true" : "false");
 
-  initDone = true;
+  initDone_ = true;
   this->dump_config();
 }
 
 void DomodreamsMCP23017::dump_config() {
   ESP_LOGCONFIG(TAG, "Domodreams MCP23017");
   ESP_LOGCONFIG(TAG, "  Address: 0x%02X", this->address_);
-  ESP_LOGCONFIG(TAG, "  Debounce: %u ms", (unsigned) debounceMs);
-  ESP_LOGCONFIG(TAG, "  longMin: %u ms", (unsigned) longMinMs);
-  ESP_LOGCONFIG(TAG, "  doubleMaxDelay: %u ms", (unsigned) doubleMaxDelayMs);
-  ESP_LOGCONFIG(TAG, "  offDelay: %u ms", (unsigned) offDelayMs);
-  ESP_LOGCONFIG(TAG, "  releaseOffDelay: %u ms", (unsigned) releaseOffDelayMs);
-  ESP_LOGCONFIG(TAG, "  Reboot on fail: %s", rebootOnFail ? "true" : "false");
+  ESP_LOGCONFIG(TAG, "  Debounce: %u ms", (unsigned) debounceMs_);
+  ESP_LOGCONFIG(TAG, "  longMin: %u ms", (unsigned) longMinMs_);
+  ESP_LOGCONFIG(TAG, "  doubleMaxDelay: %u ms", (unsigned) doubleMaxDelayMs_);
+  ESP_LOGCONFIG(TAG, "  offDelay: %u ms", (unsigned) offDelayMs_);
+  ESP_LOGCONFIG(TAG, "  releaseOffDelay: %u ms", (unsigned) releaseOffDelayMs_);
+  ESP_LOGCONFIG(TAG, "  Reboot on fail: %s", rebootOnFail_ ? "true" : "false");
   for (int i = 0; i < 16; i++) {
-    if (sensors[i] != nullptr) {
-      const char *last = lastPublishedState[i].empty() ? "(none)" : lastPublishedState[i].c_str();
-      ESP_LOGCONFIG(TAG, "  Sensor %d: %s | last: %s",
-                    i, sensors[i]->get_name().c_str(), last);
+    if (sensors_[i] != nullptr) {
+      ESP_LOGCONFIG(TAG, "  Sensor %02d: %s", i, sensors_[i]->get_name().c_str());
+    } else if (hasPinAutoName_[i]) {
+      ESP_LOGCONFIG(TAG, "  Headless pin %02d (auto-name: %s)", i, pinAutoName_[i].c_str());
+    } else {
+      ESP_LOGCONFIG(TAG, "  Headless pin %02d", i);
     }
   }
   if (!fail_reason_.empty()) {
@@ -104,20 +73,22 @@ void DomodreamsMCP23017::dump_config() {
 }
 
 void DomodreamsMCP23017::update() {
-  if (!initDone) return;
+  if (!initDone_) return;
 
   uint16_t word = 0;
   if (!this->readGpio(word)) {
     ESP_LOGW(TAG, "MCP23017 0x%02X read failed", this->address_);
-    this->handleIoFail();
+    this->handleIoFail_();
     return;
   }
-  this->ioFailStreak = 0;
+  this->ioFailStreak_ = 0;
 
   const uint32_t now = millis();
-  this->runDebounce(word, now);
-  this->evaluateAndPublish();
+  this->runDebounce_(word, now);
+  this->evaluateAndPublish_();
 }
+
+// ---------- I2C helpers ----------
 
 bool DomodreamsMCP23017::writeReg(uint8_t reg, uint8_t val) {
   return this->write_register(reg, &val, 1) == i2c::ERROR_OK;
@@ -136,236 +107,288 @@ bool DomodreamsMCP23017::readGpio(uint16_t &word) {
   return true;
 }
 
-void DomodreamsMCP23017::runDebounce(uint16_t word, uint32_t now) {
+// ---------- Debounce ----------
+
+void DomodreamsMCP23017::runDebounce_(uint16_t word, uint32_t now) {
   for (int i = 0; i < 16; i++) {
     const bool raw = (word >> i) & 0x1;
 
-    if (raw != candState[i]) {
-      candState[i] = raw;
-      candSince[i] = now;
+    if (raw != candState_[i]) {
+      candState_[i] = raw;
+      candSince_[i] = now;
       continue;
     }
 
-    const uint32_t held = now - candSince[i];
-    if (held < debounceMs) continue;
+    const uint32_t held = now - candSince_[i];
+    if (held < debounceMs_) continue;
 
-    if (!stableValid[i]) {
-      stableValid[i] = true;
-      stableState[i] = candState[i];
-      changedMask |= (1u << i);
+    if (!stableValid_[i]) {
+      stableValid_[i] = true;
+      stableState_[i] = candState_[i];
+      changedMask_ |= (1u << i);
       continue;
     }
 
-    if (stableState[i] != candState[i]) {
-      stableState[i] = candState[i];
-      changedMask |= (1u << i);
+    if (stableState_[i] != candState_[i]) {
+      stableState_[i] = candState_[i];
+      changedMask_ |= (1u << i);
     }
   }
 }
 
-void DomodreamsMCP23017::evaluateAndPublish() {
+// ---------- FSM + publish ----------
+
+void DomodreamsMCP23017::evaluateAndPublish_() {
   const uint32_t now = millis();
 
-  if (changedMask == 0) {
-    for (int i = 0; i < 16; i++) this->fsmOnTick(i, now);
+  if (changedMask_ == 0) {
+    for (int i = 0; i < 16; i++) this->fsmOnTick_(i, now);
     return;
   }
 
   for (int i = 0; i < 16; i++) {
-    if ((changedMask & (1u << i)) == 0) continue;
-    const bool newLevel = stableState[i];
-    bool havePrev = fsmPrevValid[i];
-    bool prev = fsmPrevLevel[i];
+    if ((changedMask_ & (1u << i)) == 0) continue;
+    const bool newLevel = stableState_[i];
+    bool havePrev = fsmPrevValid_[i];
+    bool prev = fsmPrevLevel_[i];
     if (!havePrev || newLevel != prev) {
-      this->fsmOnEdge(i, newLevel, now);
-      fsmPrevValid[i] = true;
-      fsmPrevLevel[i] = newLevel;
+      this->fsmOnEdge_(i, newLevel, now);
+      fsmPrevValid_[i] = true;
+      fsmPrevLevel_[i] = newLevel;
     }
   }
 
-  for (int i = 0; i < 16; i++) this->fsmOnTick(i, now);
+  for (int i = 0; i < 16; i++) this->fsmOnTick_(i, now);
 
-  changedMask = 0;
+  changedMask_ = 0;
 }
 
-void DomodreamsMCP23017::cancelOff(int i) {
-  tOffDeadline[i] = 0;
+void DomodreamsMCP23017::cancelOff_(int i) {
+  tOffDeadline_[i] = 0;
 }
 
-void DomodreamsMCP23017::scheduleOff(int i, uint32_t delayMs) {
+void DomodreamsMCP23017::scheduleOff_(int i, uint32_t delayMs) {
   if (delayMs == 0) {
-    publishPin(i, wordOff.c_str());
-    tOffDeadline[i] = 0;
-    fsmState[i] = PinFSM::IDLE;
-    return;
+    // immediate publish (no timer)
+    this->publishPin_(i, wordOff_.c_str());
+    fsmState_[i] = PinFSM::IDLE;
+    tOffDeadline_[i] = 0;
+  } else {
+    tOffDeadline_[i] = millis() + delayMs;
+    fsmState_[i] = PinFSM::POST_DELAY_OFF;
   }
-  tOffDeadline[i] = millis() + delayMs;
-  fsmState[i] = PinFSM::POST_DELAY_OFF;
 }
 
-void DomodreamsMCP23017::fsmOnEdge(int i, bool newLevel, uint32_t now) {
-  switch (fsmState[i]) {
+void DomodreamsMCP23017::fsmOnEdge_(int i, bool newLevel, uint32_t now) {
+  switch (fsmState_[i]) {
     case PinFSM::IDLE:
       if (newLevel) {
-        cancelOff(i);
-        fsmState[i] = PinFSM::PRESSING;
-        tPressStart[i] = now;
-        publishedLong[i] = false;
-        if (effLongMin(i) == 0 && effDoubleDelay(i) == 0) {
-          publishPin(i, wordSingle.c_str());
-          scheduleOff(i, effOffDelay(i));
+        // If single is immediate (long_min==0 && double_max_delay==0): publish now
+        if (effLongMin_(i) == 0 && effDoubleMaxDelay_(i) == 0) {
+          this->publishPin_(i, wordSingle_.c_str());
+          // schedule off using offDelay (may be 0 → immediate off)
+          this->scheduleOff_(i, effOffDelay_(i));
+          // remain in POST_DELAY_OFF or IDLE depending on off_delay
+          return;
         }
+        cancelOff_(i);
+        fsmState_[i] = PinFSM::PRESSING;
+        tPressStart_[i] = now;
+        publishedLong_[i] = false;
       }
       break;
 
     case PinFSM::PRESSING:
       if (!newLevel) {
-        const uint32_t dur = now - tPressStart[i];
-        const uint32_t lm = effLongMin(i);
-        if (lm > 0 && dur < lm) {
-          if (effDoubleDelay(i) == 0) {
-            publishPin(i, wordSingle.c_str());
-            scheduleOff(i, effOffDelay(i));
-            fsmState[i] = PinFSM::POST_DELAY_OFF;
+        const uint32_t dur = now - tPressStart_[i];
+        if (dur < effLongMin_(i)) {
+          if (effDoubleMaxDelay_(i) == 0) {
+            // double disabled → single immediately on release
+            this->publishPin_(i, wordSingle_.c_str());
+            this->scheduleOff_(i, effOffDelay_(i));
+            fsmState_[i] = PinFSM::POST_DELAY_OFF;
           } else {
-            tRelease[i] = now;
-            tWindowDeadline[i] = now + effDoubleDelay(i);
-            fsmState[i] = PinFSM::WAIT_DOUBLE_WINDOW;
+            tWindowDeadline_[i] = now + effDoubleMaxDelay_(i);
+            fsmState_[i] = PinFSM::WAIT_DOUBLE_WINDOW;
           }
-        } else if (lm == 0) {
-          // instant mode already handled on press; nothing on release
         } else {
-          publishPin(i, wordReleased.c_str());
-          scheduleOff(i, releaseOffDelayMs);
+          // defensive path; normally LONG_HELD tick would have fired
+          this->publishPin_(i, wordReleased_.c_str());
+          this->scheduleOff_(i, releaseOffDelayMs_);
         }
       }
       break;
 
     case PinFSM::WAIT_DOUBLE_WINDOW:
       if (newLevel) {
-        publishPin(i, wordDouble.c_str());
-        cancelOff(i);
-        tPressStart[i] = now;
-        fsmState[i] = PinFSM::DOUBLE_WAIT_RELEASE;
+        this->publishPin_(i, wordDouble_.c_str());
+        cancelOff_(i);
+        fsmState_[i] = PinFSM::DOUBLE_WAIT_RELEASE;
       }
       break;
 
     case PinFSM::LONG_HELD:
       if (!newLevel) {
-        publishPin(i, wordReleased.c_str());
-        scheduleOff(i, releaseOffDelayMs);
+        this->publishPin_(i, wordReleased_.c_str());
+        this->scheduleOff_(i, releaseOffDelayMs_);
       }
       break;
 
     case PinFSM::DOUBLE_WAIT_RELEASE:
       if (!newLevel) {
-        scheduleOff(i, effOffDelay(i));
+        this->scheduleOff_(i, effOffDelay_(i));
       }
       break;
 
     case PinFSM::POST_DELAY_OFF:
       if (newLevel) {
-        cancelOff(i);
-        fsmState[i] = PinFSM::PRESSING;
-        tPressStart[i] = now;
-        publishedLong[i] = false;
+        cancelOff_(i);
+        fsmState_[i] = PinFSM::PRESSING;
+        tPressStart_[i] = now;
+        publishedLong_[i] = false;
       }
       break;
   }
 }
 
-void DomodreamsMCP23017::fsmOnTick(int i, uint32_t now) {
-  switch (fsmState[i]) {
+void DomodreamsMCP23017::fsmOnTick_(int i, uint32_t now) {
+  switch (fsmState_[i]) {
     case PinFSM::PRESSING: {
-      const uint32_t lm = effLongMin(i);
-      if (lm > 0) {
-        const uint32_t held = now - tPressStart[i];
-        if (!publishedLong[i] && held >= lm) {
-          publishPin(i, wordLong.c_str());
-          publishedLong[i] = true;
-          fsmState[i] = PinFSM::LONG_HELD;
-        }
+      const uint32_t held = now - tPressStart_[i];
+      if (!publishedLong_[i] && held >= effLongMin_(i)) {
+        this->publishPin_(i, wordLong_.c_str());
+        publishedLong_[i] = true;
+        fsmState_[i] = PinFSM::LONG_HELD;
       }
       break;
     }
+
     case PinFSM::WAIT_DOUBLE_WINDOW:
-      if (now >= tWindowDeadline[i]) {
-        publishPin(i, wordSingle.c_str());
-        scheduleOff(i, effOffDelay(i));
+      if (now >= tWindowDeadline_[i]) {
+        this->publishPin_(i, wordSingle_.c_str());
+        this->scheduleOff_(i, effOffDelay_(i));
       }
       break;
+
     case PinFSM::DOUBLE_WAIT_RELEASE:
+      // wait release
       break;
+
     case PinFSM::POST_DELAY_OFF:
-      if (tOffDeadline[i] != 0 && now >= tOffDeadline[i]) {
-        publishPin(i, wordOff.c_str());
-        tOffDeadline[i] = 0;
-        fsmState[i] = PinFSM::IDLE;
+      if (tOffDeadline_[i] != 0 && now >= tOffDeadline_[i]) {
+        this->publishPin_(i, wordOff_.c_str());
+        tOffDeadline_[i] = 0;
+        fsmState_[i] = PinFSM::IDLE;
       }
       break;
+
     case PinFSM::LONG_HELD:
     case PinFSM::IDLE:
       break;
   }
 }
 
-void DomodreamsMCP23017::publishPin(int i, const char *state) {
-  auto *ts = sensors[i];
-  if (ts == nullptr) return;
-  if (lastPublishedState[i] == state) return;
+void DomodreamsMCP23017::publishPin_(int i, const char *state) {
+  // suppress repeated publishes
+  if (lastPublishedState_[i] == state) return;
+
+  // INFO log once per change
   ESP_LOGI(TAG, "Mcp at 0x%02X - pin %d - state change: %s", this->address_, i, state);
-  ts->publish_state(state);
-  lastPublishedState[i] = state;
-  if (std::string(state) != wordOff) {
-    const uint32_t now = millis();
-    this->publishLastTriggered_(i, state, now);
+
+  // save prev for trigger
+  const std::string prev = lastPublishedState_[i];
+  lastPublishedState_[i] = state;
+
+  // publish to text sensor if present
+  if (sensors_[i] != nullptr)
+    sensors_[i]->publish_state(state);
+
+  // mirrors (button + time)
+  if (!(state == wordOff_)) {
+    this->publishLastTriggered_(i, millis());
+  }
+
+  // trigger automations
+  if (!fsm_triggers_.empty()) {
+    std::string name;
+    if (sensors_[i] != nullptr) {
+      name = sensors_[i]->get_name().c_str();
+    } else if (hasPinAutoName_[i]) {
+      name = pinAutoName_[i];
+    } else {
+      name = "";
+    }
+    const uint32_t t_ms = millis();
+    const uint64_t ut = this->current_unixtime_();
+    for (auto *t : fsm_triggers_) {
+      t->trigger(i, name, std::string(state), prev, t_ms, ut);
+    }
   }
 }
 
-void DomodreamsMCP23017::publishLastTriggered_(int i, const char * /*state*/, uint32_t now) {
-  if (lastTriggeredButton != nullptr) {
-    if (sensors[i] != nullptr)
-      lastTriggeredButton->publish_state(sensors[i]->get_name().c_str());
+void DomodreamsMCP23017::publishLastTriggered_(int i, uint32_t now) {
+  if (lastTriggeredButton_ != nullptr) {
+    if (sensors_[i] != nullptr)
+      lastTriggeredButton_->publish_state(sensors_[i]->get_name().c_str());
+    else if (hasPinAutoName_[i])
+      lastTriggeredButton_->publish_state(pinAutoName_[i]);
   }
-  if (lastTriggeredTime != nullptr) {
-    if (rtc != nullptr) {
-      auto t = rtc->now();
+  if (lastTriggeredTime_ != nullptr) {
+    if (rtc_ != nullptr) {
+      auto t = rtc_->now();
       if (t.is_valid()) {
         std::string iso = t.strftime("%Y-%m-%dT%H:%M:%SZ");
-        lastTriggeredTime->publish_state(iso);
+        lastTriggeredTime_->publish_state(iso);
         return;
       }
     }
     char buf[16];
     snprintf(buf, sizeof(buf), "%u", (unsigned) now);
-    lastTriggeredTime->publish_state(buf);
+    lastTriggeredTime_->publish_state(buf);
   }
 }
 
-void DomodreamsMCP23017::handleIoFail() {
-  if (!this->initDone) return;
-  if (this->ioFailStreak < 255) this->ioFailStreak++;
-  if (this->ioFailStreak >= 3) {
+uint64_t DomodreamsMCP23017::current_unixtime_() const {
+  if (rtc_ != nullptr) {
+    auto t = rtc_->now();
+    if (t.is_valid()) {
+      return static_cast<uint64_t>(t.timestamp);
+    }
+  }
+  // fallback: seconds since boot (not real UNIX time, but monotonic)
+  return static_cast<uint64_t>(millis() / 1000UL);
+}
+
+// ---------- Guard (I2C fail after setup) ----------
+
+void DomodreamsMCP23017::handleIoFail_() {
+  if (!this->initDone_) return;
+
+  if (this->ioFailStreak_ < 255)
+    this->ioFailStreak_++;
+
+  if (this->ioFailStreak_ >= 3) {
     fail_reason_ = str_sprintf("I/O failed at 0x%02X", this->address_);
     ESP_LOGE(TAG, "%s", fail_reason_.c_str());
     this->publishAllOff_();
     this->mark_failed(fail_reason_.c_str());
-    this->initDone = false;
-    if (this->rebootOnFail) {
+    this->initDone_ = false;
+
+    if (this->rebootOnFail_) {
       ESP_LOGE(TAG, "Scheduling reboot in 1s due to I/O failures (0x%02X)", this->address_);
       this->set_timeout(1000, []() {
-#ifdef ARDUINO
-        ESP.restart();
-#else
-        esp_restart();
-#endif
+        #ifdef ARDUINO
+          ESP.restart();
+        #else
+          esp_restart();
+        #endif
       });
     }
   }
 }
 
 void DomodreamsMCP23017::publishAllOff_() {
-  for (int i = 0; i < 16; i++) this->publishPin(i, wordOff.c_str());
+  for (int i = 0; i < 16; i++) this->publishPin_(i, wordOff_.c_str());
 }
 
 }  // namespace domodreams_mcp23017
