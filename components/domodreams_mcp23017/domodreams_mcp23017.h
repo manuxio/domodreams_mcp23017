@@ -34,6 +34,7 @@ class DomodreamsMCP23017 : public PollingComponent, public i2c::I2CDevice {
 
   // setters from codegen
   void setTextSensor(int pin, text_sensor::TextSensor *ts) { sensors[pin] = ts; }
+
   void setDebounce(uint32_t v) { debounceMs = v; }
   void setLongMin(uint32_t v) { longMinMs = v; }
   void setDoubleMaxDelay(uint32_t v) { doubleMaxDelayMs = v; }
@@ -46,9 +47,27 @@ class DomodreamsMCP23017 : public PollingComponent, public i2c::I2CDevice {
   }
   void setTime(time::RealTimeClock *t) { rtc = t; }
 
-  // Per-pin overrides setters (optional; used by codegen if present)
+  void setWords(const std::string &wo, const std::string &ws,
+                const std::string &wd, const std::string &wl,
+                const std::string &wr) {
+    wordOff = wo; wordSingle = ws; wordDouble = wd; wordLong = wl; wordReleased = wr;
+  }
+
+  // per-pin overrides
   void setPinLongMin(int pin, uint32_t v) { pinLongMin[pin] = v; hasPinLongMin[pin] = true; }
   void setPinDoubleMaxDelay(int pin, uint32_t v) { pinDoubleMaxDelay[pin] = v; hasPinDouble[pin] = true; }
+  void setPinOffDelay(int pin, uint32_t v) { pinOffDelay[pin] = v; hasPinOffDelay[pin] = true; }
+
+  // Effective thresholds (per-pin override if set, else global)
+  inline uint32_t effLongMin(int i) const {
+    return hasPinLongMin[i] ? pinLongMin[i] : longMinMs;
+  }
+  inline uint32_t effDoubleDelay(int i) const {
+    return hasPinDouble[i] ? pinDoubleMaxDelay[i] : doubleMaxDelayMs;
+  }
+  inline uint32_t effOffDelay(int i) const {
+    return hasPinOffDelay[i] ? pinOffDelay[i] : offDelayMs;
+  }
 
  protected:
   // I2C helpers
@@ -80,14 +99,6 @@ class DomodreamsMCP23017 : public PollingComponent, public i2c::I2CDevice {
   void scheduleOff(int i, uint32_t delayMs);
   void cancelOff(int i);
 
-  // Effective thresholds (per-pin override if set, else global)
-  inline uint32_t effLongMin(int i) const {
-    return hasPinLongMin[i] ? pinLongMin[i] : longMinMs;
-  }
-  inline uint32_t effDoubleDelay(int i) const {
-    return hasPinDouble[i] ? pinDoubleMaxDelay[i] : doubleMaxDelayMs;
-  }
-
   // FSM state storage
   PinFSM  fsmState[16] = {PinFSM::IDLE};
   bool    fsmPrevValid[16] = {false};
@@ -117,7 +128,7 @@ class DomodreamsMCP23017 : public PollingComponent, public i2c::I2CDevice {
   bool stableValid[16] = {false};
   uint16_t changedMask{0};
 
-  // configuration (global)
+  // configuration (globals)
   uint32_t debounceMs{50};
   uint32_t longMinMs{1000};
   uint32_t doubleMaxDelayMs{300};
@@ -127,9 +138,18 @@ class DomodreamsMCP23017 : public PollingComponent, public i2c::I2CDevice {
 
   // per-pin overrides (optional)
   bool hasPinLongMin[16] = {false};
-  bool hasPinDouble[16] = {false};
+  bool hasPinDouble[16]  = {false};
+  bool hasPinOffDelay[16] = {false};
   uint32_t pinLongMin[16] = {0};
   uint32_t pinDoubleMaxDelay[16] = {0};
+  uint32_t pinOffDelay[16] = {0};
+
+  // configurable words per instance
+  std::string wordOff{"off"};
+  std::string wordSingle{"single"};
+  std::string wordDouble{"double"};
+  std::string wordLong{"long"};
+  std::string wordReleased{"released"};
 
   // last published state per pin (for dedup + logging)
   std::string lastPublishedState[16];
