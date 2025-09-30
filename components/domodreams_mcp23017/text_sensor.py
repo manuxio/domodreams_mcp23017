@@ -1,13 +1,37 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import text_sensor, i2c, time as time_comp
-from esphome.const import CONF_ID, CONF_NAME, CONF_ADDRESS, CONF_I2C_ID
+from esphome import automation
+from esphome.const import CONF_ID, CONF_NAME, CONF_ADDRESS, CONF_I2C_ID, CONF_TRIGGER_ID
 
 DEPENDENCIES = ["i2c"]
 
 domodreams_mcp23017_ns = cg.esphome_ns.namespace("domodreams_mcp23017")
+FailureTrigger = domodreams_mcp23017_ns.class_(
+    "FailureTrigger",
+    automation.Trigger.template(
+        cg.std_string,
+        cg.uint8
+    )
+)
+
 DomodreamsMCP23017 = domodreams_mcp23017_ns.class_(
-    "DomodreamsMCP23017", cg.PollingComponent, i2c.I2CDevice
+    "DomodreamsMCP23017",
+    cg.PollingComponent,
+    i2c.I2CDevice
+)
+
+# Trigger: (int pin, std::string name, std::string state, std::string prev_state, uint32 time_ms, uint64 unixtime)
+FSMChangeTrigger = domodreams_mcp23017_ns.class_(
+    "FSMChangeTrigger",
+    automation.Trigger.template(
+        cg.int_,
+        cg.std_string,
+        cg.std_string,
+        cg.std_string,
+        cg.uint32,
+        cg.uint64,
+    ),
 )
 
 # Top-level keys
@@ -38,6 +62,9 @@ CONF_WORD_SINGLE = "word_single"
 CONF_WORD_DOUBLE = "word_double"
 CONF_WORD_LONG = "word_long"
 CONF_WORD_RELEASED = "word_released"
+
+CONF_ON_FSM_CHANGE = "on_fsm_change"
+CONF_ON_FAILURE = "on_error"
 
 # -----------------------------------------------------------------------------
 # Per-pin override schema (can be headless or named)
@@ -74,41 +101,7 @@ SENSORS_LIST_SCHEMA = cv.All(
 # -----------------------------------------------------------------------------
 # Base CONFIG_SCHEMA (before autogen expansion)
 # -----------------------------------------------------------------------------
-_BASE_CONFIG_SCHEMA = cv.Schema(
-    {
-        cv.GenerateID(): cv.declare_id(DomodreamsMCP23017),
-
-        # Timings (component defaults)
-        cv.Optional(CONF_DEBOUNCE, default=50): cv.positive_int,
-        cv.Optional(CONF_LONG_MIN, default=1000): cv.int_range(min=0),
-        cv.Optional(CONF_DOUBLE_MAX_DELAY, default=300): cv.int_range(min=0),
-        cv.Optional(CONF_OFF_DELAY, default=100): cv.int_range(min=0),
-        cv.Optional(CONF_RELEASE_OFF_DELAY, default=1000): cv.int_range(min=0),
-
-        cv.Optional(CONF_REBOOT_ON_FAIL, default=False): cv.boolean,
-
-        # Optional “last triggered”
-        cv.Optional(CONF_LAST_TRIGGERED_BUTTON): cv.use_id(text_sensor.TextSensor),
-        cv.Optional(CONF_LAST_TRIGGERED_TIME): cv.use_id(text_sensor.TextSensor),
-
-        # Optional time source
-        cv.Optional(CONF_TIME_ID): cv.use_id(time_comp.RealTimeClock),
-
-        # Autogenerate any missing pins
-        cv.Optional(CONF_GENERATE_SENSORS, default=False): cv.boolean,
-
-        # Optional per-pin overrides and/or explicit sensors
-        cv.Optional(CONF_PINS, default=[]): cv.ensure_list(PIN_OVERRIDE_SCHEMA),
-        cv.Optional(CONF_SENSORS, default=[]): SENSORS_LIST_SCHEMA,
-
-        # Optional custom words
-        cv.Optional(CONF_WORD_OFF): cv.string,
-        cv.Optional(CONF_WORD_SINGLE): cv.string,
-        cv.Optional(CONF_WORD_DOUBLE): cv.string,
-        cv.Optional(CONF_WORD_LONG): cv.string,
-        cv.Optional(CONF_WORD_RELEASED): cv.string,
-    }
-).extend(i2c.i2c_device_schema(default_address=0x20)).extend(cv.polling_component_schema("10ms"))
+# _BASE_CONFIG_SCHEMA = 
 
 # -----------------------------------------------------------------------------
 # Autogen expander (runs during validation, BEFORE to_code)
@@ -159,14 +152,65 @@ def _expand_autogen(cfg):
         assigned.add(p)
 
     config[CONF_SENSORS] = sensors_list
+    print(config)
     return config
 
 # Final CONFIG_SCHEMA: validate, then expand autogen, then re-validate sensors list
 CONFIG_SCHEMA = cv.All(
-    _BASE_CONFIG_SCHEMA,
     _expand_autogen,
+    cv.Schema(
+        {
+            cv.GenerateID(): cv.declare_id(DomodreamsMCP23017),
+
+            # Timings (component defaults)
+            cv.Optional(CONF_DEBOUNCE, default=50): cv.positive_int,
+            cv.Optional(CONF_LONG_MIN, default=1000): cv.int_range(min=0),
+            cv.Optional(CONF_DOUBLE_MAX_DELAY, default=300): cv.int_range(min=0),
+            cv.Optional(CONF_OFF_DELAY, default=100): cv.int_range(min=0),
+            cv.Optional(CONF_RELEASE_OFF_DELAY, default=1000): cv.int_range(min=0),
+
+            cv.Optional(CONF_REBOOT_ON_FAIL, default=False): cv.boolean,
+
+            # Optional “last triggered”
+            cv.Optional(CONF_LAST_TRIGGERED_BUTTON): cv.use_id(text_sensor.TextSensor),
+            cv.Optional(CONF_LAST_TRIGGERED_TIME): cv.use_id(text_sensor.TextSensor),
+
+            # Optional time source
+            cv.Optional(CONF_TIME_ID): cv.use_id(time_comp.RealTimeClock),
+
+            # Autogenerate any missing pins
+            cv.Optional(CONF_GENERATE_SENSORS, default=False): cv.boolean,
+
+            # Optional per-pin overrides and/or explicit sensors
+            cv.Optional(CONF_PINS, default=[]): cv.ensure_list(PIN_OVERRIDE_SCHEMA),
+            cv.Optional(CONF_SENSORS, default=[]): SENSORS_LIST_SCHEMA,
+
+            # Optional custom words
+            cv.Optional(CONF_WORD_OFF): cv.string,
+            cv.Optional(CONF_WORD_SINGLE): cv.string,
+            cv.Optional(CONF_WORD_DOUBLE): cv.string,
+            cv.Optional(CONF_WORD_LONG): cv.string,
+            cv.Optional(CONF_WORD_RELEASED): cv.string,
+
+            # Failure trigger
+            cv.Optional(CONF_ON_FAILURE, default=[]): cv.ensure_list(
+                automation.validate_automation(
+                    {
+                        cv.GenerateID(automation.CONF_TRIGGER_ID): cv.declare_id(FailureTrigger),
+                    }
+                )
+            ),
+
+            # trigger
+            cv.Optional(CONF_ON_FSM_CHANGE): automation.validate_automation(
+                {
+                    cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(FSMChangeTrigger),
+                }
+            ),
+        }
+    ).extend(i2c.i2c_device_schema(default_address=0x20)).extend(cv.polling_component_schema("10ms")),
     # Ensure the expanded sensors list still conforms to the sensors schema
-    cv.Schema({cv.Optional(CONF_SENSORS, default=[]): SENSORS_LIST_SCHEMA}, extra=cv.ALLOW_EXTRA),
+    # cv.Schema({cv.Optional(CONF_SENSORS, default=[]): SENSORS_LIST_SCHEMA}, extra=cv.ALLOW_EXTRA),
 )
 
 # -----------------------------------------------------------------------------
@@ -248,3 +292,35 @@ async def to_code(config):
         if CONF_OFF_DELAY in pconf:
             cg.add(var.setPinOffDelay(pin, pconf[CONF_OFF_DELAY]))
         assigned.add(pin)
+    # FSM Trigger
+    if CONF_ON_FSM_CHANGE in config:
+        for ac in config[CONF_ON_FSM_CHANGE]:
+            trig = cg.new_Pvariable(ac[CONF_TRIGGER_ID])
+            cg.add(var.registerOnFSMChange(trig))
+            await automation.build_automation(
+                trig,
+                [
+                    (cg.int_, "pin"),
+                    (cg.std_string, "name"),
+                    (cg.std_string, "state"),
+                    (cg.std_string, "prev_state"),
+                    (cg.uint32, "time_ms"),
+                    (cg.uint64, "unixtime"),
+                ],
+                ac,
+            )
+
+    
+    # on_failure automations (tolerate double-wrapped lists)
+    if CONF_ON_FAILURE in config:
+        for conf in config.get(CONF_ON_FAILURE, []):
+            conf_list = conf if isinstance(conf, list) else [conf]
+            for c in conf_list:
+                trig = cg.new_Pvariable(c[CONF_TRIGGER_ID], FailureTrigger())
+                cg.add(var.registerOnFailure(trig))
+                await automation.build_automation(
+                    trig,
+                    [
+                        (cg.std_string, "reason"),
+                        (cg.uint8, "streak")
+                    ], c)

@@ -12,6 +12,8 @@
 namespace esphome {
 namespace domodreams_mcp23017 {
 
+// Trigger for on_failure(reason, streak)
+class FailureTrigger : public Trigger<std::string, uint8_t> {};
 static const char *const TAG = "domodreams_mcp23017";
 
 // MCP23017 registers
@@ -66,7 +68,8 @@ class DomodreamsMCP23017 : public PollingComponent, public i2c::I2CDevice {
 
   // Trigger registration
   void registerOnFSMChange(FSMChangeTrigger *t) { fsm_triggers_.push_back(t); }
-
+  void registerOnFailure(FailureTrigger *t) { failure_triggers_.push_back(t); }
+  
  protected:
   // I2C helpers
   bool writeReg(uint8_t reg, uint8_t val);
@@ -167,8 +170,16 @@ class DomodreamsMCP23017 : public PollingComponent, public i2c::I2CDevice {
   // persistent failure reason
   std::string fail_reason_;
 
-  // triggers
+    // triggers
   std::vector<FSMChangeTrigger*> fsm_triggers_;
+
+  
+  // on_failure trigger list
+  std::vector<FailureTrigger*> failure_triggers_;
+  
+  // emit on_failure to all registered triggers
+  void fireFailure_(const std::string &reason, uint8_t streak);
+
 };
 
 }  // namespace domodreams_mcp23017

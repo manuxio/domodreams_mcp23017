@@ -20,7 +20,6 @@ namespace domodreams_mcp23017 {
 
 void DomodreamsMCP23017::setup() {
   ESP_LOGI(TAG, "Setting up Domodreams MCP23017 at 0x%02X", this->address_);
-  this->publishAllOff_();
 
   bool ok = true;
   ok &= this->writeReg(REG_IODIRA, 0xFF);    // inputs
@@ -35,6 +34,8 @@ void DomodreamsMCP23017::setup() {
   if (!ok) {
     fail_reason_ = str_sprintf("Init failed at 0x%02X", this->address_);
     ESP_LOGE(TAG, "%s", fail_reason_.c_str());
+    // Fire once we have a real reason, after triggers are registered
+    this->fireFailure_(fail_reason_, this->ioFailStreak_);
     this->mark_failed(fail_reason_.c_str());
     return;
   }
@@ -46,7 +47,9 @@ void DomodreamsMCP23017::setup() {
            offDelayMs_, releaseOffDelayMs_, rebootOnFail_ ? "true" : "false");
 
   initDone_ = true;
+  this->publishAllOff_();
   this->dump_config();
+
 }
 
 void DomodreamsMCP23017::dump_config() {
@@ -370,6 +373,8 @@ void DomodreamsMCP23017::handleIoFail_() {
   if (this->ioFailStreak_ >= 3) {
     fail_reason_ = str_sprintf("I/O failed at 0x%02X", this->address_);
     ESP_LOGE(TAG, "%s", fail_reason_.c_str());
+    // Fire on_failure before publishing Off/mark_failed
+    this->fireFailure_(fail_reason_, this->ioFailStreak_);
     this->publishAllOff_();
     this->mark_failed(fail_reason_.c_str());
     this->initDone_ = false;
@@ -387,6 +392,15 @@ void DomodreamsMCP23017::handleIoFail_() {
   }
 }
 
+
+void DomodreamsMCP23017::fireFailure_(const std::string &reason, uint8_t streak) {
+  if (!this->failure_triggers_.empty()) {
+    ESP_LOGE(TAG, "Running error trigger!");
+  }
+  for (auto *t : this->failure_triggers_) {
+    t->trigger(reason, streak);
+  }
+}
 void DomodreamsMCP23017::publishAllOff_() {
   for (int i = 0; i < 16; i++) this->publishPin_(i, wordOff_.c_str());
 }
