@@ -35,6 +35,7 @@ void DomodreamsMCP23017::setup() {
     fail_reason_ = str_sprintf("Init failed at 0x%02X", this->address_);
     ESP_LOGE(TAG, "%s", fail_reason_.c_str());
     // Fire once we have a real reason, after triggers are registered
+    this->publishAllOff_();
     this->fireFailure_(fail_reason_, this->ioFailStreak_);
     this->mark_failed(fail_reason_.c_str());
     return;
